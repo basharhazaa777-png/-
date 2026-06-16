@@ -1,0 +1,403 @@
+<?php
+// index.php
+require_once 'config.php';
+session_start();
+
+// إدارة الرمز السري للجلسة (الافتراضي 777 كمشروعك السابق)
+if (!isset($_SESSION['bashar_pin'])) {
+    $_SESSION['bashar_pin'] = "777"; 
+}
+
+$alert_message = "";
+
+// معالجة العمليات الخلفية (POST) القادمة من نماذج التحكم
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // 1. عملية رفع مقرر تعليمي جديد سحابياً (يدعم السحب والإفلات)
+    if (isset($_POST['action']) && $_POST['action'] === 'upload_book') {
+        $title = trim($_POST['title']);
+        $dept = $_POST['dept'];
+        $level = $_POST['level'];
+        $sem = $_POST['sem'];
+        
+        if (!empty($_FILES['pdf_file']['name']) && !empty($title)) {
+            $file = $_FILES['pdf_file'];
+            $file_ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+            $tech_name = 'lib_' . time() . '.' . $file_ext;
+            
+            // قراءة الملف ورفعه مباشرة إلى الـ Bucket السحابي (pdfs)
+            $file_data = file_get_contents($file['tmp_name']);
+            $upload_endpoint = '/storage/v1/object/pdfs/' . $tech_name;
+            
+            $upload_headers = ['Content-Type: application/pdf'];
+            $upload_res = supabase_request($upload_endpoint, 'POST', $file_data, $upload_headers);
+            
+            // توليد الرابط العام المباشر للملف المرفوع بناءً على رابط السحابة الخاص بك
+            $public_url = SB_URL . '/storage/v1/object/public/pdfs/' . $tech_name;
+            
+            // إدخال سجل البيانات في جدول الكتب (books)
+            $book_data = [
+                'title' => $title,
+                'level_name' => $level,
+                'category' => $sem,
+                'pdf_url' => $public_url,
+                'dept' => $dept
+            ];
+            supabase_request('/rest/v1/books', 'POST', $book_data);
+            $alert_message = "تم حفظ ورفع المقرر التعليمي بنجاح تام للمخزن السحابي!";
+        }
+    }
+    
+    // 2. عملية تحديث بيانات كتاب
+    if (isset($_POST['action']) && $_POST['action'] === 'update_book') {
+        $id = $_POST['id'];
+        $update_data = [
+            'title' => trim($_POST['title']),
+            'dept' => $_POST['dept'],
+            'level_name' => $_POST['level'],
+            'category' => $_POST['sem']
+        ];
+        supabase_request('/rest/v1/books?id=eq.' . $id, 'PATCH', $update_data);
+        $alert_message = "تم تحديث بيانات المقرر السحابية بنجاح!";
+    }
+
+    // 3. عملية حذف كتاب نهائياً
+    if (isset($_POST['action']) && $_POST['action'] === 'delete_book') {
+        $id = $_POST['id'];
+        supabase_request('/rest/v1/books?id=eq.' . $id, 'DELETE');
+        $alert_message = "تم حذف الملف نهائياً!";
+    }
+
+    // 4. عملية إضافة قسم أكاديمي جديد
+    if (isset($_POST['action']) && $_POST['action'] === 'add_category') {
+        $cat_name = trim($_POST['cat_name']);
+        if (!empty($cat_name)) {
+            supabase_request('/rest/v1/categories', 'POST', ['name' => $cat_name]);
+            $alert_message = "تمت إضافة التخصص بنجاح للكلية!";
+        }
+    }
+}
+
+// جلب البيانات السحابية الحية لبناء القوائم وعرض الكتب (رندر تلقائي سريع)
+$books_raw = supabase_request('/rest/v1/books?select=*&order=created_at.desc');
+$books = is_array($books_raw) ? $books_raw : [];
+
+$categories_raw = supabase_request('/rest/v1/categories?select=name');
+$static_categories = ['معلم حاسوب', 'معلم لغة عربية', 'معلم لغة إنجليزية', 'معلم رياضيات', 'قسم الكيمياء', 'مراجع عامة'];
+if (is_array($categories_raw)) {
+    foreach ($categories_raw as $c) {
+        if (!in_array($c['name'], $static_categories)) {
+            $static_categories[] = $c['name'];
+        }
+    }
+}
+
+// تحديد القسم النشط المعروض حالياً (الافتراضي: معلم حاسوب)
+$current_dept = isset($_GET['dept']) ? $_GET['dept'] : 'معلم حاسوب';
+?>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>نظام المكتبة الإلكترونية المتكامل | م. بشار صغير</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #1a3a5f; --primary-light: #244d7d; --accent: #d4a373; --bg: #f4f6f9; --white: #ffffff;
+            --text: #2d3436; --sidebar-w: 290px; --success: #27ae60; 
+            --warning-dark: #2980b9; --danger-dark: #576574; --admin-card-bg: #1e1e24;
+        }
+        body.dark-mode { --bg: #121212; --white: #1e1e1e; --primary: #1a252f; --text: #e0e0e0; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Tajawal', sans-serif; }
+        body { background: var(--bg); color: var(--text); overflow-x: hidden; transition: background 0.3s; }
+        
+        .mobile-bar { display: flex; position: fixed; top: 0; left: 0; right: 0; background: var(--primary); color: white; padding: 15px; z-index: 8500; justify-content: space-between; align-items: center; box-shadow: 0 4px 15px rgba(0,0,0,0.15); }
+        .hidden { display: none !important; }
+        
+        .drawer-pull-tab { display: flex; position: fixed; right: 0; top: 50%; transform: translateY(-50%); width: 24px; height: 60px; background: var(--primary); color: var(--accent); z-index: 8800; border-radius: 12px 0 0 12px; align-items: center; justify-content: center; box-shadow: -2px 4px 10px rgba(0,0,0,0.2); cursor: pointer; transition: 0.3s ease; }
+        
+        .sidebar { width: var(--sidebar-w); background: linear-gradient(145deg, var(--primary), var(--primary-light)); color: white; position: fixed; right: 0; top: 0; bottom: 0; z-index: 9000; transition: 0.4s; transform: translateX(100%); display: flex; flex-direction: column; overflow: hidden; }
+        .sidebar.active { transform: translateX(0); }
+        .nav-content { flex: 1; overflow-y: auto; padding: 20px 12px; }
+        .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 8900; backdrop-filter: blur(5px); }
+        .overlay.active { display: block; }
+        
+        .nav-link { padding: 14px 12px; margin-bottom: 10px; border-radius: 12px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.04); font-size: 14px; font-weight: 700; text-decoration: none; color: white; transition: 0.3s; }
+        .nav-link.active { background: var(--accent); color: var(--primary); font-weight: 900; }
+        
+        .sidebar-footer { border-top: 1px solid rgba(255,255,255,0.08); padding: 20px 15px; background: rgba(0,0,0,0.15); }
+        .admin-open-btn { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; background: var(--accent); color: var(--primary); border-radius: 12px; font-weight: 900; cursor: pointer; }
+        
+        .main-content { padding: 85px 16px 40px; max-width: 1200px; margin: 0 auto; }
+        .doc-row { background: var(--white); margin-bottom: 12px; padding: 16px; border-radius: 16px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 10px rgba(0,0,0,0.02); }
+        .doc-title { flex: 1; font-size: 14px; font-weight: bold; margin-left: 15px; }
+        
+        .btn-sm, .btn-admin-action { padding: 9px 16px; border-radius: 10px; color: white; text-decoration: none; font-size: 13px; font-weight: bold; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+        
+        /* منطقة السحب والإفلات المخصصة للملفات الـ PDF */
+        .drag-drop-area { border: 2px dashed var(--accent); padding: 25px; border-radius: 12px; text-align: center; background: rgba(255,255,255,0.02); cursor: pointer; margin-bottom: 14px; transition: 0.3s; }
+        .drag-drop-area.dragover { background: rgba(214, 163, 115, 0.15); border-color: #fff; }
+
+        .admin-fullscreen-overlay, .sub-popup-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 20000; backdrop-filter: blur(10px); justify-content: center; align-items: center; padding: 16px; }
+        .admin-fullscreen-overlay.active, .sub-popup-overlay.active { display: flex; }
+        .admin-hub-card, .sub-popup-card { width: 100%; max-width: 500px; background: var(--admin-card-bg); border-radius: 28px; padding: 30px 20px; color: #fff; }
+        
+        .hub-box { background: rgba(255, 255, 255, 0.02); border: 2px solid rgba(255,255,255,0.05); border-radius: 20px; padding: 20px 15px; margin-bottom: 16px; cursor: pointer; display: flex; align-items: center; gap: 15px; }
+        .admin-panel-input { width: 100%; padding: 12px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 12px; margin-bottom: 14px; outline: none; }
+
+        #splash { position: fixed; inset: 0; z-index: 30000; background: var(--primary); display: flex; justify-content: center; align-items: center; }
+        .splash-box { background: var(--white); padding: 35px 25px; border-radius: 28px; text-align: center; width: 100%; max-width: 390px; border-bottom: 6px solid var(--accent); }
+
+        @media (min-width: 992px) {
+            .sidebar { transform: translateX(0); }
+            .main-content { margin-right: var(--sidebar-w); padding-top: 25px; padding-left: 25px; }
+            .mobile-bar, .overlay, .drawer-pull-tab { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <?php if(!isset($_GET['start'])): ?>
+    <div id="splash">
+        <div class="splash-box">
+            <img src="logo.png" width="85" style="margin-bottom: 15px;" onerror="this.src='https://placehold.co/85'">
+            <h2 style="color: var(--primary); font-size: 20px; font-weight: 900;">مكتبة كلية التربية والعلوم - باجل</h2>
+            <p style="font-size: 13px; color: #666; margin: 12px 0 25px; line-height: 1.6;">منصة سحابية متكاملة لإدارة واستعراض المقررات الأكاديمية وملفات الـ PDF الحقيقية للطلاب.</p>
+            <a href="?start=1" style="display:block; text-align:center; text-decoration:none; padding:16px; background:var(--primary); color:white; border-radius:14px; font-weight:bold; font-size:15px;">دخول المنصة وبدء التصفح</a>
+            <div style="font-size: 11px; color: #a0a0a0; margin-top: 18px; font-weight: bold;">تتطوير وإعداد: م. بشار صغير</div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <div class="overlay" id="uiOverlay" onclick="UI.menu(false)"></div>
+
+    <div class="drawer-pull-tab" id="mobileDrawerTab" onclick="UI.menu(true)">
+        <i class="fas fa-chevron-left"></i>
+    </div>
+
+    <div class="mobile-bar" id="appTopBar">
+        <i class="fas fa-bars" onclick="UI.menu(true)" style="cursor: pointer; font-size: 22px;"></i>
+        <span style="font-weight:900; font-size: 17px;">المكتبة السحابية</span>
+        <i class="fas fa-user-shield" onclick="UI.openHubPanel()" style="cursor: pointer; font-size: 20px; color: var(--accent);"></i>
+    </div>
+
+    <aside class="sidebar" id="sidebar">
+        <div style="text-align:center; padding: 25px 15px; border-bottom: 1px solid rgba(255,255,255,0.06);"><img src="logo.png" width="55" onerror="this.src='https://placehold.co/55'"></div>
+        <div class="nav-content" id="categoriesNavContainer">
+            <?php foreach($static_categories as $cat): ?>
+                <a href="?start=1&dept=<?= urlencode($cat) ?>" class="nav-link <?= $cat === $current_dept ? 'active' : '' ?>">
+                    <i class="fas fa-folder-open"></i> <?= htmlspecialchars($cat) ?>
+                </a>
+            <?php endforeach; ?>
+        </div>
+        <div class="sidebar-footer">
+            <div class="nav-link" onclick="UI.dark()" style="margin-bottom: 8px;"><i class="fas fa-adjust"></i> الوضع الليلي</div>
+            <div class="admin-open-btn" onclick="UI.openHubPanel()"><i class="fas fa-user-shield"></i> لوحة إدارة المحتوى</div>
+        </div>
+    </aside>
+
+    <main class="main-content" id="mainAppZone">
+        <h3 id="pageTitle" style="margin-bottom:22px; color: var(--primary); border-right: 6px solid var(--accent); padding-right: 12px; font-weight: 900; font-size: 20px;">قسم: <?= htmlspecialchars($current_dept) ?></h3>
+        
+        <div style="background:var(--white); padding:14px; border-radius:16px; display:flex; gap:12px; margin-bottom:25px; align-items: center; border: 1px solid rgba(0,0,0,0.02);">
+            <i class="fas fa-search" style="color:#b3b3b3; font-size: 16px;"></i>
+            <input type="text" id="search" onkeyup="searchBooks()" placeholder="بحث سريع عن المقررات والملفات الـ PDF الحقيقية..." style="border:none; outline:none; flex:1; font-size: 14px; background:transparent; color: var(--text);">
+        </div>
+
+        <div id="renderZone">
+            <?php
+            // تصفية وعرض محتوى الكتب للقسم النشط حالياً
+            $filtered_books = array_filter($books, function($b) use ($current_dept) {
+                return $b['dept'] === $current_dept;
+            });
+
+            if($current_dept === 'مراجع عامة') {
+                echo '<div style="margin-top:10px;">';
+                foreach($filtered_books as $b) { renderBookRow($b); }
+                echo '</div>';
+            } else {
+                for($l=1; $l<=4; $l++) {
+                    $lvl_books = array_filter($filtered_books, function($b) use ($l) { return $b['level_name'] == $l; });
+                    if(count($lvl_books) > 0) {
+                        echo "<div style='margin-bottom:25px;'><div style='background:var(--accent); color:var(--primary); padding:6px 14px; border-radius:10px; display:inline-block; font-weight:900; font-size:12px;'>المستوى {$l}</div>";
+                        foreach(['الفصل الأول', 'الفصل الثاني'] as $sem) {
+                            $sem_books = array_filter($lvl_books, function($b) use ($sem) { return $b['category'] === $sem; });
+                            if(count($sem_books) > 0) {
+                                echo "<div style='margin: 12px 6px 6px; font-size:13px; font-weight:bold; opacity:0.65;'><i class='far fa-clock'></i> {$sem}</div>";
+                                foreach($sem_books as $b) { renderBookRow($b); }
+                            }
+                        }
+                        echo "</div>";
+                    }
+                }
+            }
+
+            function renderBookRow($b) {
+                $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] === true;
+                echo "
+                <div class='doc-row' data-title='".mb_strtolower($b['title'], 'UTF-8')."'>
+                    <div class='doc-title'><i class='fas fa-file-pdf' style='color:#e74c3c; margin-left:8px;'></i> ".htmlspecialchars($b['title'])."</div>
+                    <div class='doc-actions'>";
+                if($isAdmin) {
+                    echo "
+                    <button onclick=\"UI.openEditPopup('{$b['id']}', '{$b['title']}', '{$b['dept']}', '{$b['level_name']}', '{$b['category']}')\" class='btn-admin-action' style='background:var(--warning-dark);'><i class='fas fa-edit'></i> تعديل</button>
+                    <button onclick=\"UI.openDeletePopup('{$b['id']}', '{$b['title']}')\" class='btn-admin-action' style='background:var(--danger-dark);'><i class='fas fa-trash-alt'></i> حذف</button>";
+                }
+                echo "
+                    <button onclick=\"window.open('{$b['pdf_url']}', '_blank')\" class='btn-sm' style='background:var(--primary)'><i class='fas fa-eye'></i> قراءة</button>
+                    <a href='{$b['pdf_url']}' download class='btn-sm' style='background:var(--success)'><i class='fas fa-download'></i> تحميل</a>
+                    </div>
+                </div>";
+            }
+            ?>
+        </div>
+    </main>
+
+    <div class="admin-fullscreen-overlay" id="adminHubPanel">
+        <div class="admin-hub-card">
+            <h3 style="text-align: center; color: var(--accent); font-weight: 900; margin-bottom: 25px;"><i class="fas fa-university"></i> بوابة إدارة محتوى الكلية</h3>
+            
+            <div class="hub-box" onclick="UI.accessGate('Books')">
+                <div style="font-size:22px; color:var(--accent);"><i class="fas fa-book"></i></div>
+                <div style="flex:1;">
+                    <h4>مستطيل الكتب والمقررات التعليمية</h4>
+                    <p>أدوات رفع وتعديل المقررات السحابية عبر السحب والإفلات.</p>
+                </div>
+            </div>
+
+            <div class="hub-box" onclick="UI.accessGate('Categories')">
+                <div style="font-size:22px; color:var(--accent);"><i class="fas fa-folder-open"></i></div>
+                <div style="flex:1;">
+                    <h4>مستطيل الأقسام والتهيئة الأكاديمية</h4>
+                    <p>إضافة تخصصات جديدة للكلية أو تعديل الأسماء الحالية.</p>
+                </div>
+            </div>
+
+            <button onclick="UI.closeHubPanel()" style="width:100%; padding:14px; background:var(--danger-dark); color:white; border:none; border-radius:14px; font-weight:bold; cursor:pointer;"><i class="fas fa-times-circle"></i> خروج وإغلاق لوحة التحكم</button>
+        </div>
+    </div>
+
+    <div class="sub-popup-overlay" id="gatePopupBooks">
+        <div class="sub-popup-card">
+            <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                <input type="hidden" name="action" value="upload_book">
+                <h3 style="color: var(--accent); margin-bottom: 18px;"><i class="fas fa-plus-circle"></i> إضافة ورفع كتاب جديد</h3>
+                
+                <input type="text" name="title" class="admin-panel-input" placeholder="اسم الملف التعليمي بالعربي" required>
+                
+                <select name="dept" class="admin-panel-input">
+                    <?php foreach($static_categories as $cat) echo "<option value='{$cat}'>{$cat}</option>"; ?>
+                </select>
+                
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <select name="level" class="admin-panel-input"><option value="1">مستوى 1</option><option value="2">مستوى 2</option><option value="3">مستوى 3</option><option value="4">مستوى 4</option></select>
+                    <select name="sem" class="admin-panel-input"><option value="الفصل الأول">ترم 1</option><option value="الفصل الثاني">ترم 2</option></select>
+                </div>
+
+                <div class="drag-drop-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                    <i class="fas fa-cloud-upload-alt" style="font-size: 32px; color: var(--accent); margin-bottom: 8px;"></i>
+                    <p id="dragText">اسحب ملف الـ PDF هنا أو اضغط للتصفح السريع</p>
+                    <input type="file" name="pdf_file" id="fileInput" style="display:none;" accept=".pdf" required>
+                </div>
+
+                <button type="submit" style="width:100%; padding:14px; background:var(--success); color:white; border:none; border-radius:12px; font-weight:bold; cursor:pointer;">حفظ ورفع الكتاب سحابياً</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="sub-popup-overlay" id="subActionPopup">
+        <div style="background:var(--white); padding:22px; border-radius:24px; width:100%; max-width:420px; color:var(--text);" id="subPopupContent"></div>
+    </div>
+
+    <script>
+        // إشعارات المزامنة السحابية الفورية القادمة من خلفية PHP
+        <?php if(!empty($alert_message)): ?>
+            alert("<?= $alert_message ?>");
+            window.location.href = "?start=1&dept=<?= urlencode($current_dept) ?>";
+        <?php endif; ?>
+
+        // تفعيل خواص السحب والافلات وربطها بالـ Input الخاص بـ PHP
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const dragText = document.getElementById('dragText');
+
+        if(dropZone) {
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }, false);
+            });
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); }, false);
+            });
+            dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                if(dt.files.length) { fileInput.files = dt.files; dragText.innerText = "جاهز للرفع السحابي: " + dt.files[0].name; }
+            });
+            fileInput.addEventListener('change', () => {
+                if(fileInput.files.length) dragText.innerText = "جاهز للرفع السحابي: " + fileInput.files[0].name;
+            });
+        }
+
+        // دالة البحث الفوري الخفيف داخل المتصفح
+        function searchBooks() {
+            let q = document.getElementById('search').value.toLowerCase();
+            document.querySelectorAll('.doc-row').forEach(row => {
+                let title = row.getAttribute('data-title');
+                row.style.display = title.includes(q) ? 'flex' : 'none';
+            });
+        }
+
+        const UI = {
+            menu: (s) => {
+                document.getElementById('sidebar').classList.toggle('active', s);
+                document.getElementById('uiOverlay').classList.toggle('active', s);
+            },
+            openHubPanel: () => { UI.menu(false); document.getElementById('adminHubPanel').classList.add('active'); },
+            closeHubPanel: () => document.getElementById('adminHubPanel').classList.remove('active'),
+            accessGate: (gate) => {
+                let pass = prompt("أدخل رمز الحماية السري لتفويض الصلاحية المباشرة:");
+                if(pass === "777") {
+                    <?php $_SESSION['is_admin'] = true; ?>
+                    document.getElementById('gatePopup' + gate).classList.add('active');
+                } else { alert("الرمز السري خاطئ!"); }
+            },
+            openEditPopup: (id, title, dept, level, category) => {
+                const content = document.getElementById('subPopupContent');
+                content.innerHTML = `
+                    <form method="POST">
+                        <input type="hidden" name="action" value="update_book">
+                        <input type="hidden" name="id" value="${id}">
+                        <h4 style="margin-bottom:14px; font-weight:900;"><i class="fas fa-edit"></i> تعديل بيانات المقرر الدراسي</h4>
+                        <input type="text" name="title" class="admin-panel-input" style="color:#000; background:#fff; border:1px solid #ccc;" value="${title}" required>
+                        <select name="dept" class="admin-panel-input" style="color:#000; background:#fff; border:1px solid #ccc;">
+                            <option value="${dept}">${dept}</option>
+                        </select>
+                        <div style="display:flex; gap:12px;">
+                            <button type="submit" style="flex:1; padding:12px; background:var(--success); color:white; border:none; border-radius:10px; font-weight:bold;">حفظ</button>
+                            <button type="button" onclick="document.getElementById('subActionPopup').classList.remove('active')" style="flex:1; padding:12px; background:var(--danger-dark); color:white; border:none; border-radius:10px; font-weight:bold;">إلغاء</button>
+                        </div>
+                    </form>`;
+                document.getElementById('subActionPopup').classList.add('active');
+            },
+            openDeletePopup: (id, title) => {
+                const content = document.getElementById('subPopupContent');
+                content.innerHTML = `
+                    <form method="POST">
+                        <input type="hidden" name="action" value="delete_book">
+                        <input type="hidden" name="id" value="${id}">
+                        <h4 style="margin-bottom:12px; color:var(--danger-dark); font-weight:900;"><i class="fas fa-exclamation-triangle"></i> تأكيد الحذف السحابي</h4>
+                        <p style="font-size:13px; margin-bottom:18px;">هل أنت متأكد من حذف المقرّر: <b>${title}</b> نهائياً؟</p>
+                        <div style="display:flex; gap:12px;">
+                            <button type="submit" style="flex:1; padding:12px; background:var(--danger-dark); color:white; border:none; border-radius:10px; font-weight:bold;">نعم، إتلاف نهائي</button>
+                            <button type="button" onclick="document.getElementById('subActionPopup').classList.remove('active')" style="flex:1; padding:12px; background:#7f8c8d; color:white; border:none; border-radius:10px; font-weight:bold;">تراجع</button>
+                        </div>
+                    </form>`;
+                document.getElementById('subActionPopup').classList.add('active');
+            },
+            dark: () => { const isD = document.body.classList.toggle('dark-mode'); localStorage.setItem('dark', isD ? 'on' : 'off'); }
+        };
+        if(localStorage.getItem('dark')==='on') document.body.classList.add('dark-mode');
+    </script>
+</body>
+</html>
