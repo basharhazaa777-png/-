@@ -176,7 +176,7 @@ $isAdmin = (isset($_SESSION['is_admin']) && $_SESSION['is_admin'] === true) ? 't
             <h2 style="color: var(--primary); font-size: 20px; font-weight: 900;">مكتبة كلية التربية والعلوم التطبيقية والتقنية  - باجل</h2>
             <p style="font-size: 13px; color: #666; margin: 12px 0 25px; line-height: 1.6;">مكتبة سحابية متكاملة لإدارة واستعراض المقررات الأكاديمية وملفات الـ PDF الحقيقية للطلاب.</p>
             <button onclick="App.init()" style="width:100%; padding:16px; background:var(--primary); color:white; border:none; border-radius:14px; font-weight:bold; cursor: pointer; font-size:15px; box-shadow: 0 4px 15px rgba(26,58,95,0.3);">دخول  وبدء التصفح</button>
-            <div style="font-size: 11px; color: #a0a0a0; margin-top: 18px; font-weight: bold;">تطوير وإعداد: م. بشار صغير</div>
+            <div style="font-size: 11px; color: #a0a0a0; margin-top: 18px; font-weight: bold;">الحقوق محفوظة لكية التربية والعلوم التطبيقية والتقنية -باجل 2026</div>
         </div>
     </div>
 
